@@ -21,3 +21,9 @@ Notes
   compensates so enhanced audio is sample-aligned with the input.
 - `dsp.js` output matched the `dpdfnet` Python `StreamEnhancer` to 2e-7 max abs difference
   on a 10 s clip (dpdfnet2).
+
+## Near-field scenario
+"Near-field preset" adds the interferer far-field (synthetic exponential-decay reverb with a weak direct path,
+plus a 3.5 kHz low-pass) at a level below the target. The room is synthetic, not measured, so treat results
+as indicative. Krisp's docs describe BVC as built for a close-mic headset talker versus background voices;
+this preset approximates that, it does not reproduce Krisp's evaluation.

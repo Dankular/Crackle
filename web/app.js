@@ -12,10 +12,16 @@ const files = { A: null, B: null };
 async function init() {
   configs = await (await fetch('models.json')).json();
   for (const [k, c] of Object.entries(configs)) $('model').add(new Option(c.label, k));
-  for (const id of ['intfDb', 'snr']) {
-    const upd = () => { $(id + 'V').textContent = $(id).value + ' dB'; };
+  for (const [id, unit] of [['intfDb', ' dB'], ['snr', ' dB'], ['rt60', ' s']]) {
+    const upd = () => { $(id + 'V').textContent = $(id).value + unit; };
     $(id).addEventListener('input', upd); upd();
   }
+  // close-mic talker vs a quieter, reverberant background talker + low-level noise
+  $('preset').onclick = () => {
+    $('intfDb').value = -15; $('farfield').checked = true; $('rt60').value = 0.5;
+    $('noiseType').value = 'pink'; $('snr').value = 15;
+    for (const id of ['intfDb', 'snr', 'rt60']) $(id).dispatchEvent(new Event('input'));
+  };
 }
 
 async function fetchModel(cfg) {
@@ -115,6 +121,30 @@ function makeNoise(type, n) {
 }
 const scaleTo = (x, targetRms) => { const g = targetRms / (rms(x) || 1); const y = new Float32Array(x.length); for (let i = 0; i < x.length; i++) y[i] = x[i] * g; return y; };
 
+// ---------- far-field simulation (synthetic, not a measured room) ----------
+function fftConvolve(x, h) {
+  let n = 1; while (n < x.length + h.length - 1) n <<= 1;
+  const ar = new Float64Array(n), ai = new Float64Array(n), br = new Float64Array(n), bi = new Float64Array(n);
+  ar.set(x); br.set(h);
+  fft(ar, ai); fft(br, bi);
+  for (let i = 0; i < n; i++) { const r = ar[i] * br[i] - ai[i] * bi[i], m = ar[i] * bi[i] + ai[i] * br[i]; ar[i] = r; ai[i] = -m; } // conj for inverse
+  fft(ar, ai);
+  const y = new Float32Array(x.length);
+  for (let i = 0; i < y.length; i++) y[i] = ar[i] / n;
+  return y;
+}
+// Direct path + exponentially decaying noise tail (RT60), then 1-pole low-pass (~3.5 kHz) for air/wall absorption.
+function farField(x, sr, rt60) {
+  const len = Math.floor(rt60 * sr), h = new Float32Array(len);
+  const k = 6.9078 / (rt60 * sr);
+  for (let i = 0; i < len; i++) h[i] = (Math.random() * 2 - 1) * Math.exp(-k * i);
+  h[Math.floor(0.003 * sr)] += 0.35 * Math.sqrt(h.reduce((s, v) => s + v * v, 0)); // weak direct path => low direct-to-reverb ratio
+  const y = fftConvolve(x, h);
+  const a = Math.exp(-2 * Math.PI * 3500 / sr);
+  let s = 0; for (let i = 0; i < y.length; i++) { s = (1 - a) * y[i] + a * s; y[i] = s; }
+  return y;
+}
+
 // ---------- spectrogram ----------
 function fft(re, im) { // radix-2 in place
   const n = re.length;
@@ -167,9 +197,11 @@ $('run').onclick = async () => {
       const b = await decode(await files.B.arrayBuffer(), sr);
       const looped = new Float32Array(target.length);
       for (let i = 0; i < looped.length; i++) looped[i] = b[i % b.length];
-      const sc = scaleTo(looped, ra * 10 ** ($('intfDb').value / 20));
+      const far = $('farfield').checked;
+      const src = far ? farField(looped, sr, +$('rt60').value) : looped; // level set AFTER reverb
+      const sc = scaleTo(src, ra * 10 ** ($('intfDb').value / 20));
       for (let i = 0; i < mix.length; i++) mix[i] += sc[i];
-      added.push(`interferer ${$('intfDb').value} dB`);
+      added.push(`interferer ${$('intfDb').value} dB${far ? ' far-field RT60 ' + $('rt60').value + ' s' : ''}`);
     }
     if ($('noiseType').value !== 'none') {
       const nz = scaleTo(makeNoise($('noiseType').value, target.length), ra * 10 ** (-$('snr').value / 20));
